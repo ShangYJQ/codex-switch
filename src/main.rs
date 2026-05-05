@@ -94,7 +94,7 @@ impl App {
 			if event::poll(Duration::from_millis(100))? {
 				if let Event::Key(key) = event::read()? {
 					match key.code {
-						KeyCode::Down => {
+						KeyCode::Down | KeyCode::Char('j') => {
 							if self.apis.is_empty() {
 								continue;
 							}
@@ -105,7 +105,7 @@ impl App {
 							};
 							self.state.select(Some(i));
 						}
-						KeyCode::Up => {
+						KeyCode::Up | KeyCode::Char('k') => {
 							if self.apis.is_empty() {
 								continue;
 							}
@@ -122,7 +122,7 @@ impl App {
 							};
 							self.state.select(Some(i));
 						}
-						KeyCode::Enter => {
+						KeyCode::Enter | KeyCode::Char('l') => {
 							if let Some(i) = self.state.selected() {
 								// self.selected_api_name = self.api_names[i].to_string();
 
