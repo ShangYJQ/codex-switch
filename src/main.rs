@@ -11,7 +11,7 @@ use crate::{
 	config::Config,
 };
 use crossterm::event::{self, Event, KeyCode};
-use std::{io, sync::mpsc::Receiver, time::Duration};
+use std::{env, io, sync::mpsc::Receiver, time::Duration};
 
 mod apis;
 mod config;
@@ -19,9 +19,39 @@ mod config;
 const HIGHLIGHT_SYMBOL: &str = ">> ";
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+	if env::args().nth(1).as_deref() == Some("auto") {
+		run_auto()?;
+		return Ok(());
+	}
+
 	let mut terminal = ratatui::init();
 	App::new().run(&mut terminal)?;
 	ratatui::restore();
+	Ok(())
+}
+
+fn run_auto() -> Result<(), Box<dyn std::error::Error>> {
+	let config = config::get_config()?;
+	let mut accounts = apis::get_api_names(&config)?;
+
+	if accounts.is_empty() {
+		return Err("没有可用账号".into());
+	}
+
+	let rx = apis::spawn_usage_tasks(&accounts);
+	for _ in 0..accounts.len() {
+		let update = rx.recv()?;
+		apply_usage_update(&mut accounts, update);
+	}
+	sort_accounts(&mut accounts);
+
+	let account = accounts
+		.iter()
+		.find(|account| matches!(account.usage, ApiUsageState::Loaded(_)))
+		.ok_or("没有成功获取 API 用量的账号")?;
+
+	apis::apply_api(&config, &account.entries)?;
+	println!("switched to {}", account.name);
 	Ok(())
 }
 
@@ -201,10 +231,7 @@ impl App {
 				.iter_mut()
 				.find(|account| account.name == update.account_name)
 			{
-				account.usage = match update.usage {
-					Some(usage) => ApiUsageState::Loaded(usage),
-					None => ApiUsageState::Unavailable(update.email),
-				};
+				account.usage = usage_state_from_update(update);
 				updated = true;
 			}
 		}
@@ -214,16 +241,7 @@ impl App {
 		}
 	}
 	fn sort_apis(&mut self, selected_name: Option<String>) {
-		self.apis.sort_by(|a, b| {
-			b.usage_sort_rank()
-				.cmp(&a.usage_sort_rank())
-				.then_with(|| b.usage_sort_score().total_cmp(&a.usage_sort_score()))
-				.then_with(|| {
-					b.usage_secondary_sort_score()
-						.total_cmp(&a.usage_secondary_sort_score())
-				})
-				.then_with(|| a.name.cmp(&b.name))
-		});
+		sort_accounts(&mut self.apis);
 
 		if let Some(selected_name) = selected_name {
 			if let Some(index) = self
@@ -242,6 +260,38 @@ impl App {
 			self.state.select(Some(0));
 		}
 	}
+}
+
+fn apply_usage_update(accounts: &mut [ApiAccount], update: ApiUsageUpdate) -> bool {
+	if let Some(account) = accounts
+		.iter_mut()
+		.find(|account| account.name == update.account_name)
+	{
+		account.usage = usage_state_from_update(update);
+		true
+	} else {
+		false
+	}
+}
+
+fn usage_state_from_update(update: ApiUsageUpdate) -> ApiUsageState {
+	match update.usage {
+		Some(usage) => ApiUsageState::Loaded(usage),
+		None => ApiUsageState::Unavailable(update.email),
+	}
+}
+
+fn sort_accounts(accounts: &mut [ApiAccount]) {
+	accounts.sort_by(|a, b| {
+		b.usage_sort_rank()
+			.cmp(&a.usage_sort_rank())
+			.then_with(|| b.usage_sort_score().total_cmp(&a.usage_sort_score()))
+			.then_with(|| {
+				b.usage_secondary_sort_score()
+					.total_cmp(&a.usage_secondary_sort_score())
+			})
+			.then_with(|| a.name.cmp(&b.name))
+	});
 }
 
 fn format_account_row(account: &ApiAccount, width: usize, is_selected: bool) -> Line<'static> {
