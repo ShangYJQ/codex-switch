@@ -1,8 +1,9 @@
 use ratatui::{
-	DefaultTerminal, Frame,
+	layout::Rect,
 	style::{Color, Style},
 	text::{Line, Span},
-	widgets::{Block, Borders, List, ListItem, ListState},
+	widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
+	DefaultTerminal, Frame,
 };
 
 use crate::{
@@ -112,8 +113,30 @@ impl App {
 		Ok(())
 	}
 	fn draw(&mut self, frame: &mut Frame) {
-		let item_width = usize::from(frame.area().width.saturating_sub(2))
-			.saturating_sub(HIGHLIGHT_SYMBOL.chars().count());
+		let area = frame.area();
+		let inner_area = Rect {
+			x: area.x.saturating_add(1),
+			y: area.y.saturating_add(1),
+			width: area.width.saturating_sub(2),
+			height: area.height.saturating_sub(2),
+		};
+		let detail_height = inner_area.height.min(4);
+		let list_height = inner_area.height.saturating_sub(detail_height);
+		let list_area = Rect {
+			x: inner_area.x,
+			y: inner_area.y,
+			width: inner_area.width,
+			height: list_height,
+		};
+		let detail_area = Rect {
+			x: inner_area.x,
+			y: inner_area.y + list_height,
+			width: inner_area.width,
+			height: detail_height,
+		};
+
+		let item_width =
+			usize::from(list_area.width).saturating_sub(HIGHLIGHT_SYMBOL.chars().count());
 		let selected_index = self.state.selected();
 		let items: Vec<ListItem> = self
 			.apis
@@ -128,23 +151,48 @@ impl App {
 			})
 			.collect();
 
+		let block = Block::default().borders(Borders::ALL);
 		let list = List::new(items)
-			.block(Block::default().borders(Borders::ALL))
 			.highlight_style(Style::default().bg(Color::Blue))
 			.highlight_symbol(HIGHLIGHT_SYMBOL);
 
-		frame.render_stateful_widget(list, frame.area(), &mut self.state);
+		frame.render_widget(block, area);
+		if list_area.height > 0 {
+			frame.render_stateful_widget(list, list_area, &mut self.state);
+		}
+		self.draw_account_detail(frame, detail_area);
+	}
+	fn draw_account_detail(&self, frame: &mut Frame, area: Rect) {
+		if area.height == 0 {
+			return;
+		}
+
+		let lines = self
+			.selected_account()
+			.map(ApiAccount::detail_lines)
+			.unwrap_or_else(|| {
+				vec![
+					String::from("email: --"),
+					String::from("plan_type: --"),
+					String::from("5h --% reset --"),
+					String::from("7d --% reset --"),
+				]
+			})
+			.into_iter()
+			.map(Line::from)
+			.collect::<Vec<_>>();
+
+		frame.render_widget(Paragraph::new(lines), area);
+	}
+	fn selected_account(&self) -> Option<&ApiAccount> {
+		self.state.selected().and_then(|index| self.apis.get(index))
 	}
 	fn receive_usage_updates(&mut self) {
 		let Some(rx) = &self.usage_rx else {
 			return;
 		};
 
-		let selected_name = self
-			.state
-			.selected()
-			.and_then(|index| self.apis.get(index))
-			.map(|account| account.name.clone());
+		let selected_name = self.selected_account().map(|account| account.name.clone());
 		let mut updated = false;
 
 		while let Ok(update) = rx.try_recv() {
@@ -155,7 +203,7 @@ impl App {
 			{
 				account.usage = match update.usage {
 					Some(usage) => ApiUsageState::Loaded(usage),
-					None => ApiUsageState::Unavailable,
+					None => ApiUsageState::Unavailable(update.email),
 				};
 				updated = true;
 			}

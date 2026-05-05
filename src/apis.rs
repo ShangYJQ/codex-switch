@@ -7,6 +7,8 @@ use std::{
 };
 
 use crate::config::Config;
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use chrono::{DateTime, Local, Utc};
 use reqwest::blocking::Client;
 use serde::Deserialize;
 
@@ -21,7 +23,7 @@ pub struct ApiAccount {
 pub enum ApiUsageState {
 	Loading,
 	Loaded(ApiUsage),
-	Unavailable,
+	Unavailable(Option<String>),
 }
 
 pub enum ApiUsageTone {
@@ -32,19 +34,27 @@ pub enum ApiUsageTone {
 }
 
 pub struct ApiUsage {
+	email: Option<String>,
+	plan_type: Option<String>,
 	primary_label: String,
 	primary_used_percent: Option<f64>,
+	primary_reset_after_seconds: Option<u64>,
+	primary_reset_at: Option<i64>,
 	secondary_label: String,
 	secondary_used_percent: Option<f64>,
+	secondary_reset_after_seconds: Option<u64>,
+	secondary_reset_at: Option<i64>,
 }
 
 pub struct ApiUsageUpdate {
 	pub account_name: String,
 	pub usage: Option<ApiUsage>,
+	pub email: Option<String>,
 }
 
 #[derive(Deserialize)]
 struct AuthJson {
+	email: Option<String>,
 	tokens: Option<AuthTokens>,
 }
 
@@ -52,10 +62,13 @@ struct AuthJson {
 struct AuthTokens {
 	access_token: Option<String>,
 	account_id: Option<String>,
+	id_token: Option<String>,
 }
 
 #[derive(Deserialize)]
 struct UsageResponse {
+	email: Option<String>,
+	plan_type: Option<String>,
 	rate_limit: Option<RateLimit>,
 }
 
@@ -69,6 +82,8 @@ struct RateLimit {
 struct RateLimitWindow {
 	used_percent: Option<f64>,
 	limit_window_seconds: Option<u64>,
+	reset_after_seconds: Option<u64>,
+	reset_at: Option<i64>,
 }
 
 impl ApiAccount {
@@ -76,14 +91,14 @@ impl ApiAccount {
 		match &self.usage {
 			ApiUsageState::Loading => format_usage("5h", "...", "7d", "..."),
 			ApiUsageState::Loaded(usage) => usage.display_text(),
-			ApiUsageState::Unavailable => format_usage("5h", "--%", "7d", "--%"),
+			ApiUsageState::Unavailable(_) => format_usage("5h", "--%", "7d", "--%"),
 		}
 	}
 
 	pub fn usage_tone(&self) -> ApiUsageTone {
 		match &self.usage {
 			ApiUsageState::Loading => ApiUsageTone::Default,
-			ApiUsageState::Unavailable => ApiUsageTone::Error,
+			ApiUsageState::Unavailable(_) => ApiUsageTone::Error,
 			ApiUsageState::Loaded(usage) => {
 				if usage.is_low_remaining() {
 					ApiUsageTone::Warning
@@ -99,14 +114,14 @@ impl ApiAccount {
 	pub fn usage_sort_score(&self) -> f64 {
 		match &self.usage {
 			ApiUsageState::Loaded(usage) => usage.primary_remaining_percent().unwrap_or(0.0),
-			ApiUsageState::Loading | ApiUsageState::Unavailable => 0.0,
+			ApiUsageState::Loading | ApiUsageState::Unavailable(_) => 0.0,
 		}
 	}
 
 	pub fn usage_secondary_sort_score(&self) -> f64 {
 		match &self.usage {
 			ApiUsageState::Loaded(usage) => usage.secondary_remaining_percent().unwrap_or(0.0),
-			ApiUsageState::Loading | ApiUsageState::Unavailable => 0.0,
+			ApiUsageState::Loading | ApiUsageState::Unavailable(_) => 0.0,
 		}
 	}
 
@@ -116,6 +131,24 @@ impl ApiAccount {
 			ApiUsageTone::Default => 1,
 			ApiUsageTone::Warning => 2,
 			ApiUsageTone::Success => 3,
+		}
+	}
+
+	pub fn detail_lines(&self) -> Vec<String> {
+		match &self.usage {
+			ApiUsageState::Loading => vec![
+				String::from("email: loading..."),
+				String::from("plan_type: loading..."),
+				String::from("5h ... reset in ..."),
+				String::from("7d ... reset in ..."),
+			],
+			ApiUsageState::Unavailable(email) => vec![
+				format!("email: {}", email.as_deref().unwrap_or("--")),
+				String::from("plan_type: --"),
+				String::from("5h --% reset --"),
+				String::from("7d --% reset --"),
+			],
+			ApiUsageState::Loaded(usage) => usage.detail_lines(),
 		}
 	}
 }
@@ -148,6 +181,25 @@ impl ApiUsage {
 			|| self
 				.secondary_remaining_percent()
 				.is_some_and(|remaining| remaining < 1.0)
+	}
+
+	fn detail_lines(&self) -> Vec<String> {
+		vec![
+			format!("email: {}", self.email.as_deref().unwrap_or("--")),
+			format!("plan_type: {}", self.plan_type.as_deref().unwrap_or("--")),
+			format_window_detail(
+				&self.primary_label,
+				self.primary_remaining_percent(),
+				self.primary_reset_after_seconds,
+				self.primary_reset_at,
+			),
+			format_window_detail(
+				&self.secondary_label,
+				self.secondary_remaining_percent(),
+				self.secondary_reset_after_seconds,
+				self.secondary_reset_at,
+			),
+		]
 	}
 }
 
@@ -234,10 +286,14 @@ pub fn spawn_usage_tasks(accounts: &[ApiAccount]) -> Receiver<ApiUsageUpdate> {
 		let auth_path = auth_path(&account.entries);
 
 		thread::spawn(move || {
-			let usage = auth_path.and_then(|path| fetch_usage(&path).ok());
+			let email = auth_path.as_deref().and_then(auth_email);
+			let usage = auth_path
+				.as_deref()
+				.and_then(|path| fetch_usage(path, email.clone()).ok());
 			let _ = tx.send(ApiUsageUpdate {
 				account_name,
 				usage,
+				email,
 			});
 		});
 	}
@@ -252,7 +308,10 @@ fn auth_path(entries: &[DirEntry]) -> Option<PathBuf> {
 		.map(DirEntry::path)
 }
 
-fn fetch_usage(auth_path: &Path) -> Result<ApiUsage, Box<dyn std::error::Error>> {
+fn fetch_usage(
+	auth_path: &Path,
+	fallback_email: Option<String>,
+) -> Result<ApiUsage, Box<dyn std::error::Error>> {
 	let client = Client::builder().timeout(Duration::from_secs(10)).build()?;
 
 	let auth_content = fs::read_to_string(auth_path)?;
@@ -278,21 +337,58 @@ fn fetch_usage(auth_path: &Path) -> Result<ApiUsage, Box<dyn std::error::Error>>
 	let secondary_window = rate_limit.secondary_window;
 
 	Ok(ApiUsage {
+		email: usage.email.or(fallback_email),
+		plan_type: usage.plan_type,
 		primary_label: window_label(
 			primary_window
 				.as_ref()
 				.and_then(|window| window.limit_window_seconds),
 			"5h",
 		),
-		primary_used_percent: primary_window.and_then(|window| window.used_percent),
+		primary_used_percent: primary_window
+			.as_ref()
+			.and_then(|window| window.used_percent),
+		primary_reset_after_seconds: primary_window
+			.as_ref()
+			.and_then(|window| window.reset_after_seconds),
+		primary_reset_at: primary_window.as_ref().and_then(|window| window.reset_at),
 		secondary_label: window_label(
 			secondary_window
 				.as_ref()
 				.and_then(|window| window.limit_window_seconds),
 			"7d",
 		),
-		secondary_used_percent: secondary_window.and_then(|window| window.used_percent),
+		secondary_used_percent: secondary_window
+			.as_ref()
+			.and_then(|window| window.used_percent),
+		secondary_reset_after_seconds: secondary_window
+			.as_ref()
+			.and_then(|window| window.reset_after_seconds),
+		secondary_reset_at: secondary_window.as_ref().and_then(|window| window.reset_at),
 	})
+}
+
+fn auth_email(auth_path: &Path) -> Option<String> {
+	let auth_content = fs::read_to_string(auth_path).ok()?;
+	let auth: AuthJson = serde_json::from_str(&auth_content).ok()?;
+
+	if let Some(email) = auth.email.filter(|email| !email.trim().is_empty()) {
+		return Some(email);
+	}
+
+	let id_token = auth.tokens?.id_token?;
+	email_from_id_token(&id_token)
+}
+
+fn email_from_id_token(id_token: &str) -> Option<String> {
+	let payload = id_token.split('.').nth(1)?;
+	let decoded = URL_SAFE_NO_PAD.decode(payload).ok()?;
+	let claims: serde_json::Value = serde_json::from_slice(&decoded).ok()?;
+	claims
+		.get("email")
+		.and_then(|email| email.as_str())
+		.filter(|email| !email.trim().is_empty())
+		.map(str::to_string)
 }
 
 fn required_field(value: Option<String>, name: &str) -> Result<String, Box<dyn std::error::Error>> {
@@ -334,6 +430,43 @@ fn format_percent(value: Option<f64>) -> String {
 
 fn remaining_percent(used_percent: Option<f64>) -> Option<f64> {
 	used_percent.map(|used| (100.0 - used).clamp(0.0, 100.0))
+}
+
+fn format_window_detail(
+	label: &str,
+	remaining_percent: Option<f64>,
+	reset_after_seconds: Option<u64>,
+	reset_at: Option<i64>,
+) -> String {
+	format!(
+		"{} {} {}",
+		label,
+		format_percent(remaining_percent),
+		format_reset(reset_after_seconds, reset_at),
+	)
+}
+
+fn format_reset(reset_after_seconds: Option<u64>, reset_at: Option<i64>) -> String {
+	let Some(reset_after_seconds) = reset_after_seconds else {
+		return String::from("reset --");
+	};
+
+	if reset_after_seconds <= 86_400 {
+		let hours = reset_after_seconds / 3_600;
+		let minutes = (reset_after_seconds % 3_600) / 60;
+		return format!("reset in {hours}h {minutes}min");
+	}
+
+	let Some(reset_at) = reset_at else {
+		return String::from("reset --");
+	};
+
+	let Some(reset_at) = DateTime::<Utc>::from_timestamp(reset_at, 0) else {
+		return String::from("reset --");
+	};
+
+	let reset_at = reset_at.with_timezone(&Local);
+	format!("reset at {}", reset_at.format("%m.%d %H:%M"))
 }
 
 fn format_usage(
