@@ -1,11 +1,12 @@
 use ratatui::{
 	DefaultTerminal, Frame,
 	style::{Color, Style},
+	text::{Line, Span},
 	widgets::{Block, Borders, List, ListItem, ListState},
 };
 
 use crate::{
-	apis::{ApiAccount, ApiUsageState, ApiUsageUpdate},
+	apis::{ApiAccount, ApiUsageState, ApiUsageTone, ApiUsageUpdate},
 	config::Config,
 };
 use crossterm::event::{self, Event, KeyCode};
@@ -113,10 +114,18 @@ impl App {
 	fn draw(&mut self, frame: &mut Frame) {
 		let item_width = usize::from(frame.area().width.saturating_sub(2))
 			.saturating_sub(HIGHLIGHT_SYMBOL.chars().count());
+		let selected_index = self.state.selected();
 		let items: Vec<ListItem> = self
 			.apis
 			.iter()
-			.map(|api| ListItem::new(format_account_row(api, item_width)))
+			.enumerate()
+			.map(|(index, api)| {
+				ListItem::new(format_account_row(
+					api,
+					item_width,
+					selected_index == Some(index),
+				))
+			})
 			.collect();
 
 		let list = List::new(items)
@@ -131,26 +140,94 @@ impl App {
 			return;
 		};
 
+		let selected_name = self
+			.state
+			.selected()
+			.and_then(|index| self.apis.get(index))
+			.map(|account| account.name.clone());
+		let mut updated = false;
+
 		while let Ok(update) = rx.try_recv() {
-			if let Some(account) = self.apis.get_mut(update.index) {
+			if let Some(account) = self
+				.apis
+				.iter_mut()
+				.find(|account| account.name == update.account_name)
+			{
 				account.usage = match update.usage {
 					Some(usage) => ApiUsageState::Loaded(usage),
 					None => ApiUsageState::Unavailable,
 				};
+				updated = true;
 			}
+		}
+
+		if updated {
+			self.sort_apis(selected_name);
+		}
+	}
+	fn sort_apis(&mut self, selected_name: Option<String>) {
+		self.apis.sort_by(|a, b| {
+			b.usage_sort_rank()
+				.cmp(&a.usage_sort_rank())
+				.then_with(|| b.usage_sort_score().total_cmp(&a.usage_sort_score()))
+				.then_with(|| {
+					b.usage_secondary_sort_score()
+						.total_cmp(&a.usage_secondary_sort_score())
+				})
+				.then_with(|| a.name.cmp(&b.name))
+		});
+
+		if let Some(selected_name) = selected_name {
+			if let Some(index) = self
+				.apis
+				.iter()
+				.position(|account| account.name == selected_name)
+			{
+				self.state.select(Some(index));
+				return;
+			}
+		}
+
+		if self.apis.is_empty() {
+			self.state.select(None);
+		} else {
+			self.state.select(Some(0));
 		}
 	}
 }
 
-fn format_account_row(account: &ApiAccount, width: usize) -> String {
+fn format_account_row(account: &ApiAccount, width: usize, is_selected: bool) -> Line<'static> {
 	let usage = account.usage_text();
 	let name_width = account.name.chars().count();
 	let usage_width = usage.chars().count();
+	let name_style = if is_selected {
+		Style::default().fg(Color::Rgb(0, 0, 0))
+	} else {
+		Style::default()
+	};
+	let usage_style = Style::default().fg(usage_color(account.usage_tone()));
 
 	if width <= name_width + usage_width {
-		return format!("{} {}", account.name, usage);
+		return Line::from(vec![
+			Span::styled(account.name.clone(), name_style),
+			Span::raw(" "),
+			Span::styled(usage, usage_style),
+		]);
 	}
 
 	let spaces = width - name_width - usage_width;
-	format!("{}{}{}", account.name, " ".repeat(spaces), usage)
+	Line::from(vec![
+		Span::styled(account.name.clone(), name_style),
+		Span::raw(" ".repeat(spaces)),
+		Span::styled(usage, usage_style),
+	])
+}
+
+fn usage_color(tone: ApiUsageTone) -> Color {
+	match tone {
+		ApiUsageTone::Default => Color::White,
+		ApiUsageTone::Success => Color::Green,
+		ApiUsageTone::Warning => Color::Rgb(255, 165, 0),
+		ApiUsageTone::Error => Color::Red,
+	}
 }

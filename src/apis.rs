@@ -24,6 +24,13 @@ pub enum ApiUsageState {
 	Unavailable,
 }
 
+pub enum ApiUsageTone {
+	Default,
+	Success,
+	Warning,
+	Error,
+}
+
 pub struct ApiUsage {
 	primary_label: String,
 	primary_used_percent: Option<f64>,
@@ -32,7 +39,7 @@ pub struct ApiUsage {
 }
 
 pub struct ApiUsageUpdate {
-	pub index: usize,
+	pub account_name: String,
 	pub usage: Option<ApiUsage>,
 }
 
@@ -72,16 +79,75 @@ impl ApiAccount {
 			ApiUsageState::Unavailable => format_usage("5h", "--%", "7d", "--%"),
 		}
 	}
+
+	pub fn usage_tone(&self) -> ApiUsageTone {
+		match &self.usage {
+			ApiUsageState::Loading => ApiUsageTone::Default,
+			ApiUsageState::Unavailable => ApiUsageTone::Error,
+			ApiUsageState::Loaded(usage) => {
+				if usage.is_low_remaining() {
+					ApiUsageTone::Warning
+				} else if usage.has_remaining_percents() {
+					ApiUsageTone::Success
+				} else {
+					ApiUsageTone::Error
+				}
+			}
+		}
+	}
+
+	pub fn usage_sort_score(&self) -> f64 {
+		match &self.usage {
+			ApiUsageState::Loaded(usage) => usage.primary_remaining_percent().unwrap_or(0.0),
+			ApiUsageState::Loading | ApiUsageState::Unavailable => 0.0,
+		}
+	}
+
+	pub fn usage_secondary_sort_score(&self) -> f64 {
+		match &self.usage {
+			ApiUsageState::Loaded(usage) => usage.secondary_remaining_percent().unwrap_or(0.0),
+			ApiUsageState::Loading | ApiUsageState::Unavailable => 0.0,
+		}
+	}
+
+	pub fn usage_sort_rank(&self) -> u8 {
+		match self.usage_tone() {
+			ApiUsageTone::Error => 0,
+			ApiUsageTone::Default => 1,
+			ApiUsageTone::Warning => 2,
+			ApiUsageTone::Success => 3,
+		}
+	}
 }
 
 impl ApiUsage {
 	fn display_text(&self) -> String {
 		format_usage(
 			&self.primary_label,
-			&format_percent(self.primary_used_percent),
+			&format_percent(self.primary_remaining_percent()),
 			&self.secondary_label,
-			&format_percent(self.secondary_used_percent),
+			&format_percent(self.secondary_remaining_percent()),
 		)
+	}
+
+	fn primary_remaining_percent(&self) -> Option<f64> {
+		remaining_percent(self.primary_used_percent)
+	}
+
+	fn secondary_remaining_percent(&self) -> Option<f64> {
+		remaining_percent(self.secondary_used_percent)
+	}
+
+	fn has_remaining_percents(&self) -> bool {
+		self.primary_remaining_percent().is_some() && self.secondary_remaining_percent().is_some()
+	}
+
+	fn is_low_remaining(&self) -> bool {
+		self.primary_remaining_percent()
+			.is_some_and(|remaining| remaining < 1.0)
+			|| self
+				.secondary_remaining_percent()
+				.is_some_and(|remaining| remaining < 1.0)
 	}
 }
 
@@ -162,13 +228,17 @@ pub fn apply_api(
 pub fn spawn_usage_tasks(accounts: &[ApiAccount]) -> Receiver<ApiUsageUpdate> {
 	let (tx, rx) = mpsc::channel();
 
-	for (index, account) in accounts.iter().enumerate() {
+	for account in accounts {
 		let tx = tx.clone();
+		let account_name = account.name.clone();
 		let auth_path = auth_path(&account.entries);
 
 		thread::spawn(move || {
 			let usage = auth_path.and_then(|path| fetch_usage(&path).ok());
-			let _ = tx.send(ApiUsageUpdate { index, usage });
+			let _ = tx.send(ApiUsageUpdate {
+				account_name,
+				usage,
+			});
 		});
 	}
 
@@ -260,6 +330,10 @@ fn format_percent(value: Option<f64>) -> String {
 	} else {
 		format!("{value:.1}%")
 	}
+}
+
+fn remaining_percent(used_percent: Option<f64>) -> Option<f64> {
+	used_percent.map(|used| (100.0 - used).clamp(0.0, 100.0))
 }
 
 fn format_usage(
