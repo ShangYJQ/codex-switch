@@ -11,26 +11,30 @@ use crate::{
     config::Config,
 };
 use crossterm::event::{self, Event, KeyCode};
-use std::{env, io, sync::mpsc::Receiver, time::Duration};
+use std::{env, error::Error, sync::mpsc::Receiver, time::Duration};
 
 mod apis;
 mod config;
 
 const HIGHLIGHT_SYMBOL: &str = ">> ";
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<(), Box<dyn Error>> {
     if env::args().nth(1).as_deref() == Some("auto") {
         run_auto()?;
         return Ok(());
     }
 
-    let mut terminal = ratatui::init();
-    App::new().run(&mut terminal)?;
-    ratatui::restore();
-    Ok(())
+    run_tui()
 }
 
-fn run_auto() -> Result<(), Box<dyn std::error::Error>> {
+fn run_tui() -> Result<(), Box<dyn Error>> {
+    let mut terminal = ratatui::init();
+    let result = App::new().run(&mut terminal);
+    ratatui::restore();
+    result
+}
+
+fn run_auto() -> Result<(), Box<dyn Error>> {
     let config = config::get_config()?;
     let mut accounts = apis::get_api_names(&config)?;
 
@@ -76,10 +80,9 @@ impl App {
             usage_rx: None,
         }
     }
-    pub fn run(&mut self, terminal: &mut DefaultTerminal) -> io::Result<()> {
-        // TODO: to be safe
-        self.config = config::get_config().unwrap();
-        self.apis = apis::get_api_names(&self.config).unwrap();
+    pub fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<(), Box<dyn Error>> {
+        self.config = config::get_config()?;
+        self.apis = apis::get_api_names(&self.config)?;
         if self.apis.is_empty() {
             self.state.select(None);
         } else {
