@@ -96,6 +96,13 @@ codex-switch --version
 codex-switch -V
 ```
 
+查看帮助：
+
+```bash
+codex-switch --help
+codex-switch ping --help
+```
+
 快捷键：
 
 - `↑` / `↓`: 移动选择账号
@@ -126,6 +133,22 @@ codex-switch auto
 ```
 
 `auto` 会等待所有普通账号的用量查询完成，然后按当前排序规则选择第一名并切换。API profile 没有 `5h` / `7d` 余量语义，不参与 `auto` 自动切换。
+
+## 账号检测
+
+不打开 TUI，检测所有普通账号是否可以正常返回用量 API：
+
+```bash
+codex-switch ping
+```
+
+`ping` 会等待所有普通账号的用量查询完成。全部正常时输出：
+
+```text
+all accounts ok
+```
+
+如果有账号无法正常返回用量 API，会逐行输出异常账号的邮箱；如果无法从 `auth.json` 解析邮箱，则输出 profile 名和路径。API profile 不参与 `ping` 检测。
 
 排序规则：
 

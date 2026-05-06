@@ -1,11 +1,12 @@
 [package]
 name = "codex-switch"
-version = "0.1.4"
+version = "0.1.5"
 edition = "2024"
 
 [dependencies]
 base64 = "0.22.1"
 chrono = "0.4.42"
+clap = { version = "4.5.51", features = ["derive"] }
 crossterm = "0.29.0"
 dirs = "6.0.0"
 ratatui = "0.30.0"
