@@ -41,7 +41,7 @@ jobs:
             artifact_name: codex-switch-macos-aarch64
             archive_ext: tar.gz
             exe_suffix: ""
-          - os: windows-2025
+          - os: windows-2022
             target: x86_64-pc-windows-msvc
             artifact_name: codex-switch-windows-x86_64
             archive_ext: zip
