@@ -1,6 +1,6 @@
 # codex-switch
 
-`codex-switch` 是一个用于切换本地 Codex 账号配置的小工具。它会从多个账号目录里读取 `auth.json`，查询每个账号的 API 余量，并支持在 TUI 中手动选择账号，或使用 `auto` 模式自动切换到当前余量最多的账号。
+`codex-switch` 是一个用于切换本地 Codex 账号配置的小工具。它会从多个 profile 目录里读取 `auth.json`，查询普通账号的 API 余量，并支持在 TUI 中手动选择账号或 API profile，也可以使用 `auto` 模式自动切换到当前余量最多的普通账号。
 
 ## 配置
 
@@ -17,22 +17,69 @@ codex_config_dir = "/Users/you/.codex"
 key_dir = "/Users/you/Documents/Codex"
 ```
 
-- `codex_config_dir`: 当前 Codex 使用的配置目录，切换账号时会把选中账号目录里的文件复制到这里。
+- `codex_config_dir`: 当前 Codex 使用的配置目录，切换 profile 时会把选中目录里的 `auth.json` 和对应的配置模板复制到这里。
 - `key_dir`: 存放多个账号配置的目录。
 
 账号目录结构示例：
 
 ```text
 /Users/you/Documents/Codex
+├── .account-config.toml
+├── .api-config.toml
 ├── account-a
 │   └── auth.json
 ├── account-b
 │   └── auth.json
-└── account-c
+├── account-c
+│   └── auth.json
+└── API
     └── auth.json
 ```
 
-每个账号目录里的 `auth.json` 需要包含 `tokens.access_token` 和 `tokens.account_id`。
+## Profile 机制
+
+`key_dir` 下每个子目录都是一个 profile。profile 目录里只需要放 `auth.json`，实际使用哪份 `config.toml` 由 `key_dir` 根目录下的两个模板决定：
+
+- `.account-config.toml`: 普通账号切换时使用的默认 Codex 配置。
+- `.api-config.toml`: API profile 切换时使用的默认 Codex 配置。
+
+切换普通账号时会复制：
+
+```text
+key_dir/<account>/auth.json      -> codex_config_dir/auth.json
+key_dir/.account-config.toml     -> codex_config_dir/config.toml
+```
+
+切换 API profile 时会复制：
+
+```text
+key_dir/API/auth.json            -> codex_config_dir/auth.json
+key_dir/.api-config.toml         -> codex_config_dir/config.toml
+```
+
+profile 类型判断规则：
+
+1. 目录名是 `API` / `api` / `Api` 时，视为 API profile。
+2. 否则如果 `auth.json` 里有非空的 `OPENAI_API_KEY` 字段，也视为 API profile。
+3. 其他目录视为普通账号。
+
+普通账号会请求 `5h` / `7d` 用量并参与余量排序。API profile 不查询 `5h` / `7d`，列表右侧会显示 `.api-config.toml` 中的 `model_provider` 和 `model`，例如：
+
+```text
+API codex gpt-5.5
+```
+
+TUI 顶部会显示当前正在使用的 profile：
+
+```text
+current: account-a
+```
+
+当前 profile 的匹配方式：
+
+- 普通账号使用 `tokens.account_id` 和 `codex_config_dir/auth.json` 中的 `tokens.account_id` 匹配。
+- API profile 使用 `OPENAI_API_KEY` 和 `codex_config_dir/auth.json` 中的 `OPENAI_API_KEY` 匹配。
+- 匹配不到时显示 `current: --`。
 
 ## 使用
 
@@ -55,7 +102,7 @@ codex-switch -V
 - `Enter`: 切换到当前选中的账号
 - `q`: 退出
 
-列表右侧显示 API 余量：
+普通账号列表右侧显示 API 余量：
 
 ```text
 5h 100% 7d 84%
@@ -70,8 +117,6 @@ plan_type: plus
 7d 84% reset at 05.12 12:00
 ```
 
-`reset_after_seconds <= 24h` 时显示 `reset in xxh xxmin`；超过 24 小时时显示本地时间 `reset at MM.DD HH:MM`。
-
 ## 自动切换
 
 不打开 TUI，自动切换到最合适的账号：
@@ -80,7 +125,7 @@ plan_type: plus
 codex-switch auto
 ```
 
-`auto` 会等待所有账号的用量查询完成，然后按当前排序规则选择第一名并切换。
+`auto` 会等待所有普通账号的用量查询完成，然后按当前排序规则选择第一名并切换。API profile 没有 `5h` / `7d` 余量语义，不参与 `auto` 自动切换。
 
 排序规则：
 

@@ -48,8 +48,12 @@ fn run_auto() -> Result<(), Box<dyn Error>> {
         return Err("没有可用账号".into());
     }
 
+    let usage_task_count = accounts
+        .iter()
+        .filter(|account| account.needs_usage_fetch())
+        .count();
     let rx = apis::spawn_usage_tasks(&accounts);
-    for _ in 0..accounts.len() {
+    for _ in 0..usage_task_count {
         let update = rx.recv()?;
         apply_usage_update(&mut accounts, update);
     }
@@ -58,9 +62,9 @@ fn run_auto() -> Result<(), Box<dyn Error>> {
     let account = accounts
         .iter()
         .find(|account| matches!(account.usage, ApiUsageState::Loaded(_)))
-        .ok_or("没有成功获取 API 用量的账号")?;
+        .ok_or("没有可自动切换的账号（API profile 不参与 auto）")?;
 
-    apis::apply_api(&config, &account.entries)?;
+    apis::apply_api(&config, account)?;
     println!("switched to {}", account.name);
     Ok(())
 }
@@ -71,6 +75,8 @@ struct App {
     apis: Vec<ApiAccount>,
     config: Config,
     usage_rx: Option<Receiver<ApiUsageUpdate>>,
+    last_error: Option<String>,
+    active_profile_name: Option<String>,
 }
 
 impl App {
@@ -84,11 +90,14 @@ impl App {
             apis: Vec::new(),
             config: Config::new(),
             usage_rx: None,
+            last_error: None,
+            active_profile_name: None,
         }
     }
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<(), Box<dyn Error>> {
         self.config = config::get_config()?;
         self.apis = apis::get_api_names(&self.config)?;
+        self.active_profile_name = apis::active_profile_name(&self.config, &self.apis);
         if self.apis.is_empty() {
             self.state.select(None);
         } else {
@@ -114,6 +123,7 @@ impl App {
                             None => 0,
                         };
                         self.state.select(Some(i));
+                        self.last_error = None;
                     }
                     KeyCode::Up | KeyCode::Char('k') => {
                         if self.apis.is_empty() {
@@ -131,16 +141,18 @@ impl App {
                             None => 0,
                         };
                         self.state.select(Some(i));
+                        self.last_error = None;
                     }
                     KeyCode::Enter | KeyCode::Char('l') => {
                         if let Some(i) = self.state.selected() {
                             // self.selected_api_name = self.api_names[i].to_string();
 
                             if let Some(account) = self.apis.get(i) {
-                                let _ = apis::apply_api(&self.config, &account.entries);
+                                match apis::apply_api(&self.config, account) {
+                                    Ok(()) => self.exit = true,
+                                    Err(error) => self.last_error = Some(error.to_string()),
+                                }
                             }
-
-                            self.exit = true;
                         }
                     }
                     KeyCode::Char('q') => self.exit = true,
@@ -159,17 +171,27 @@ impl App {
             width: area.width.saturating_sub(2),
             height: area.height.saturating_sub(2),
         };
-        let detail_height = inner_area.height.min(4);
-        let list_height = inner_area.height.saturating_sub(detail_height);
-        let list_area = Rect {
+        let header_height = inner_area.height.min(2);
+        let detail_height = inner_area.height.saturating_sub(header_height).min(4);
+        let list_height = inner_area
+            .height
+            .saturating_sub(header_height)
+            .saturating_sub(detail_height);
+        let header_area = Rect {
             x: inner_area.x,
             y: inner_area.y,
+            width: inner_area.width,
+            height: header_height,
+        };
+        let list_area = Rect {
+            x: inner_area.x,
+            y: inner_area.y + header_height,
             width: inner_area.width,
             height: list_height,
         };
         let detail_area = Rect {
             x: inner_area.x,
-            y: inner_area.y + list_height,
+            y: inner_area.y + header_height + list_height,
             width: inner_area.width,
             height: detail_height,
         };
@@ -196,10 +218,23 @@ impl App {
             .highlight_symbol(HIGHLIGHT_SYMBOL);
 
         frame.render_widget(block, area);
+        self.draw_active_profile(frame, header_area);
         if list_area.height > 0 {
             frame.render_stateful_widget(list, list_area, &mut self.state);
         }
         self.draw_account_detail(frame, detail_area);
+    }
+    fn draw_active_profile(&self, frame: &mut Frame, area: Rect) {
+        if area.height == 0 {
+            return;
+        }
+
+        let name = self.active_profile_name.as_deref().unwrap_or("--");
+        let line = Line::from(vec![
+            Span::styled("current: ", Style::default().fg(Color::Gray)),
+            Span::styled(name.to_string(), Style::default().fg(Color::Cyan)),
+        ]);
+        frame.render_widget(Paragraph::new(line), area);
     }
     fn draw_account_detail(&self, frame: &mut Frame, area: Rect) {
         if area.height == 0 {
@@ -207,8 +242,15 @@ impl App {
         }
 
         let lines = self
-            .selected_account()
-            .map(ApiAccount::detail_lines)
+            .last_error
+            .as_ref()
+            .map(|error| {
+                vec![
+                    format!("error: {error}"),
+                    String::from("按 q 退出，或选择其他 profile"),
+                ]
+            })
+            .or_else(|| self.selected_account().map(ApiAccount::detail_lines))
             .unwrap_or_else(|| {
                 vec![
                     String::from("email: --"),
