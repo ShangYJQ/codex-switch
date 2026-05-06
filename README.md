@@ -163,3 +163,20 @@ cargo build --release
 ```bash
 cargo install --path .
 ```
+
+## GitHub Actions 多平台发布
+
+仓库已包含 `.github/workflows/release.yml`，会构建以下二进制产物：
+
+- `codex-switch-linux-x86_64.tar.gz`
+- `codex-switch-linux-aarch64.tar.gz`
+- `codex-switch-macos-x86_64.tar.gz`
+- `codex-switch-macos-aarch64.tar.gz`
+- `codex-switch-windows-x86_64.zip`
+
+每个压缩包都会同时生成 `.sha256` 校验文件。你可以在 GitHub Actions 页面手动运行 `Release` workflow 试构建；正式发布时推送 `v*` tag 即可自动创建 GitHub Release：
+
+```bash
+git tag v0.1.2
+git push origin v0.1.2
+```
