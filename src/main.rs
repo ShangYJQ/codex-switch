@@ -19,12 +19,14 @@ mod config;
 const HIGHLIGHT_SYMBOL: &str = ">> ";
 
 fn main() -> Result<(), Box<dyn Error>> {
-    if env::args().nth(1).as_deref() == Some("auto") {
-        run_auto()?;
-        return Ok(());
+    match env::args().nth(1).as_deref() {
+        Some("auto") => run_auto(),
+        Some("--version" | "-V") => {
+            print_version();
+            Ok(())
+        }
+        _ => run_tui(),
     }
-
-    run_tui()
 }
 
 fn run_tui() -> Result<(), Box<dyn Error>> {
@@ -32,6 +34,10 @@ fn run_tui() -> Result<(), Box<dyn Error>> {
     let result = App::new().run(&mut terminal);
     ratatui::restore();
     result
+}
+
+fn print_version() {
+    println!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
 }
 
 fn run_auto() -> Result<(), Box<dyn Error>> {

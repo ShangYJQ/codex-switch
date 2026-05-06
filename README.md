@@ -42,6 +42,13 @@ key_dir = "/Users/you/Documents/Codex"
 codex-switch
 ```
 
+查看版本：
+
+```bash
+codex-switch --version
+codex-switch -V
+```
+
 快捷键：
 
 - `↑` / `↓`: 移动选择账号
