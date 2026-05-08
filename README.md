@@ -2,6 +2,32 @@
 
 `codex-switch` 是一个用于切换本地 Codex 账号配置的小工具。它会从多个 profile 目录里读取 `auth.json`，查询普通账号的 API 余量，并支持在 TUI 中手动选择账号或 API profile，也可以使用 `auto` 模式自动切换到当前余量最多的普通账号。
 
+## 安装
+
+推荐使用 Nix flake 安装：
+
+```bash
+nix profile install github:ShangYJQ/codex-switch#codex-switch
+```
+
+如果已经 clone 到本地，也可以在项目根目录运行：
+
+```bash
+nix profile install .#codex-switch
+```
+
+安装完成后确认命令可用：
+
+```bash
+codex-switch --version
+```
+
+临时运行，不安装到 profile：
+
+```bash
+nix run github:ShangYJQ/codex-switch#codex-switch -- --version
+```
+
 ## 配置
 
 第一次运行时会自动创建配置文件：
@@ -169,6 +195,13 @@ all accounts ok
 
 ## 构建
 
+使用 Nix 构建：
+
+```bash
+nix build
+./result/bin/codex-switch --version
+```
+
 开发运行：
 
 ```bash
@@ -179,10 +212,4 @@ cargo run
 
 ```bash
 cargo build --release
-```
-
-安装到本机 Cargo bin：
-
-```bash
-cargo install --path .
 ```
